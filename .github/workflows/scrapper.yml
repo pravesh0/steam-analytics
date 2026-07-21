@@ -1,7 +1,9 @@
-name: Steam Scraper Test
+name: Steam Analytics Daily Scraper
 
 on:
-  workflow_dispatch: # Lets you trigger the script manually with a click
+  workflow_dispatch: # Allows manual triggering anytime
+  schedule:
+    - cron: '0 0 * * *' # Runs automatically every day at 00:00 UTC
 
 jobs:
   run-scraper:
