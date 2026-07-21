@@ -194,8 +194,9 @@ def save_game_metrics(conn, cursor, payload):
     # --- 2. BULK POPULATE TAGS ---
     spy_tags = spy.get("tags", {})
     if isinstance(spy_tags, dict) and spy_tags:
-        # Extract tag names
-        tag_names = [t.strip() for t in spy_tags.keys() if t and isinstance(t, str)]
+        # Create a new, clean dictionary with stripped keys to avoid KeyErrors
+        clean_spy_tags = {k.strip(): v for k, v in spy_tags.items() if k and isinstance(k, str)}
+        tag_names = list(clean_spy_tags.keys())
         
         if tag_names:
             # Insert all tags in one query
@@ -209,8 +210,8 @@ def save_game_metrics(conn, cursor, payload):
             cursor.execute("SELECT tag_id, name FROM tags WHERE name = ANY(%s);", (tag_names,))
             tag_map = {row[1]: row[0] for row in cursor.fetchall()}
             
-            # Prepare relational links
-            game_tags_data = [(app_id, tag_map[t_name], safe_int(spy_tags[t_name], 0)) for t_name in tag_names if t_name in tag_map]
+            # Prepare relational links using the CLEAN dictionary
+            game_tags_data = [(app_id, tag_map[t_name], safe_int(clean_spy_tags[t_name], 0)) for t_name in tag_names if t_name in tag_map]
             
             # Wipe old links and insert new links in bulk
             cursor.execute("DELETE FROM game_tags WHERE app_id = %s;", (app_id,))
@@ -308,7 +309,7 @@ def run_enrichment_pipeline():
         elapsed = time.time() - start_time
         print(f"[{idx}/{len(app_ids)}] App ID {app_id} -> {status} ({elapsed:.2f}s)")
         
-        time.sleep(1.2)
+        time.sleep(0.2)
 
     cursor.close()
     conn.close()
