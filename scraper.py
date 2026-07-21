@@ -150,7 +150,7 @@ def save_game_metrics(conn, cursor, payload):
         mac_support, linux_support, app_id
     ))
 
-    # --- POPULATE COMPANIES (Developers & Publishers) ---
+    # --- 1. BULK POPULATE COMPANIES ---
     developers = store.get("developers", [])
     publishers = store.get("publishers", [])
     
@@ -164,46 +164,64 @@ def save_game_metrics(conn, cursor, payload):
             if pub and isinstance(pub, str):
                 company_roles.append((pub.strip(), "publisher"))
 
-    cursor.execute("DELETE FROM game_companies WHERE app_id = %s;", (app_id,))
+    if company_roles:
+        # Extract unique company names for bulk insert
+        comp_names = list(set([c[0] for c in company_roles]))
+        
+        # Insert all companies in one query
+        psycopg2.extras.execute_values(
+            cursor,
+            "INSERT INTO companies (name) VALUES %s ON CONFLICT (name) DO NOTHING;",
+            [(c,) for c in comp_names]
+        )
+        
+        # Fetch their generated IDs in one query
+        cursor.execute("SELECT company_id, name FROM companies WHERE name = ANY(%s);", (comp_names,))
+        comp_map = {row[1]: row[0] for row in cursor.fetchall()}
+        
+        # Prepare relational links
+        game_comp_data = [(app_id, comp_map[c_name], role) for c_name, role in company_roles if c_name in comp_map]
+        
+        # Wipe old links and insert new links in bulk
+        cursor.execute("DELETE FROM game_companies WHERE app_id = %s;", (app_id,))
+        if game_comp_data:
+            psycopg2.extras.execute_values(
+                cursor,
+                "INSERT INTO game_companies (app_id, company_id, role_type) VALUES %s ON CONFLICT DO NOTHING;",
+                game_comp_data
+            )
 
-    for comp_name, role in company_roles:
-        cursor.execute("""
-            INSERT INTO companies (name) VALUES (%s)
-            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-            RETURNING company_id;
-        """, (comp_name,))
-        row = cursor.fetchone()
-        if row:
-            company_id = row[0]
-            cursor.execute("""
-                INSERT INTO game_companies (app_id, company_id, role_type)
-                VALUES (%s, %s, %s)
-                ON CONFLICT DO NOTHING;
-            """, (app_id, company_id, role))
-
-    # --- POPULATE TAGS & GAME_TAGS (From SteamSpy) ---
+    # --- 2. BULK POPULATE TAGS ---
     spy_tags = spy.get("tags", {})
     if isinstance(spy_tags, dict) and spy_tags:
-        cursor.execute("DELETE FROM game_tags WHERE app_id = %s;", (app_id,))
-        for tag_name, votes in spy_tags.items():
-            if not tag_name:
-                continue
-            cursor.execute("""
-                INSERT INTO tags (name) VALUES (%s)
-                ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-                RETURNING tag_id;
-            """, (tag_name,))
-            t_row = cursor.fetchone()
-            if t_row:
-                tag_id = t_row[0]
-                safe_votes = safe_int(votes, 0)
-                cursor.execute("""
-                    INSERT INTO game_tags (app_id, tag_id, votes)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT DO NOTHING;
-                """, (app_id, tag_id, safe_votes))
+        # Extract tag names
+        tag_names = [t.strip() for t in spy_tags.keys() if t and isinstance(t, str)]
+        
+        if tag_names:
+            # Insert all tags in one query
+            psycopg2.extras.execute_values(
+                cursor,
+                "INSERT INTO tags (name) VALUES %s ON CONFLICT (name) DO NOTHING;",
+                [(t,) for t in tag_names]
+            )
+            
+            # Fetch their generated IDs in one query
+            cursor.execute("SELECT tag_id, name FROM tags WHERE name = ANY(%s);", (tag_names,))
+            tag_map = {row[1]: row[0] for row in cursor.fetchall()}
+            
+            # Prepare relational links
+            game_tags_data = [(app_id, tag_map[t_name], safe_int(spy_tags[t_name], 0)) for t_name in tag_names if t_name in tag_map]
+            
+            # Wipe old links and insert new links in bulk
+            cursor.execute("DELETE FROM game_tags WHERE app_id = %s;", (app_id,))
+            if game_tags_data:
+                psycopg2.extras.execute_values(
+                    cursor,
+                    "INSERT INTO game_tags (app_id, tag_id, votes) VALUES %s ON CONFLICT DO NOTHING;",
+                    game_tags_data
+                )
 
-    # --- STORAGE STRATEGY ---
+    # --- 3. STORAGE STRATEGY (Weekly Metrics) ---
     is_coming_soon = release_data.get("coming_soon", False)
     live_players = safe_int(payload["players"], 0)
     peak_players = safe_int(spy.get("ccu"), 0)
