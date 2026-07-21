@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import psycopg2
+import psycopg2.extras
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
