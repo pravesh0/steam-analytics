@@ -222,58 +222,53 @@ def save_game_metrics(conn, cursor, payload):
                     game_tags_data
                 )
 
-    # --- 3. STORAGE STRATEGY (Weekly Metrics) ---
-    is_coming_soon = release_data.get("coming_soon", False)
+    # --- 3. STORAGE STRATEGY (Weekly Metrics for ALL Games) ---
     live_players = safe_int(payload["players"], 0)
-    peak_players = safe_int(spy.get("ccu"), 0)
 
-    is_dead = (not is_coming_soon) and (live_players == 0 and peak_players == 0)
-
-    if not is_dead:
-        insert_metrics_sql = """
-            INSERT INTO weekly_metrics (
-                app_id, recorded_at, current_price, discount_percent, 
-                concurrent_players, total_positive_reviews, total_negative_reviews, 
-                review_score_desc, steam_followers, estimated_owners_min, 
-                estimated_owners_max, average_playtime_2weeks, median_playtime_2weeks, top_seller_rank
-            ) VALUES (%s, DATE_TRUNC('day', NOW()), %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
-            ON CONFLICT (app_id, recorded_at) DO UPDATE SET 
-                current_price = EXCLUDED.current_price,
-                discount_percent = EXCLUDED.discount_percent,
-                concurrent_players = EXCLUDED.concurrent_players,
-                total_positive_reviews = EXCLUDED.total_positive_reviews,
-                total_negative_reviews = EXCLUDED.total_negative_reviews,
-                review_score_desc = EXCLUDED.review_score_desc,
-                estimated_owners_min = EXCLUDED.estimated_owners_min,
-                estimated_owners_max = EXCLUDED.estimated_owners_max,
-                average_playtime_2weeks = EXCLUDED.average_playtime_2weeks,
-                median_playtime_2weeks = EXCLUDED.median_playtime_2weeks,
-                top_seller_rank = EXCLUDED.top_seller_rank;
-        """
+    insert_metrics_sql = """
+        INSERT INTO weekly_metrics (
+            app_id, recorded_at, current_price, discount_percent, 
+            concurrent_players, total_positive_reviews, total_negative_reviews, 
+            review_score_desc, steam_followers, estimated_owners_min, 
+            estimated_owners_max, average_playtime_2weeks, median_playtime_2weeks, top_seller_rank
+        ) VALUES (%s, DATE_TRUNC('day', NOW()), %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
+        ON CONFLICT (app_id, recorded_at) DO UPDATE SET 
+            current_price = EXCLUDED.current_price,
+            discount_percent = EXCLUDED.discount_percent,
+            concurrent_players = EXCLUDED.concurrent_players,
+            total_positive_reviews = EXCLUDED.total_positive_reviews,
+            total_negative_reviews = EXCLUDED.total_negative_reviews,
+            review_score_desc = EXCLUDED.review_score_desc,
+            estimated_owners_min = EXCLUDED.estimated_owners_min,
+            estimated_owners_max = EXCLUDED.estimated_owners_max,
+            average_playtime_2weeks = EXCLUDED.average_playtime_2weeks,
+            median_playtime_2weeks = EXCLUDED.median_playtime_2weeks,
+            top_seller_rank = EXCLUDED.top_seller_rank;
+    """
+    
+    owners_raw = spy.get("owners", "0 .. 0")
+    if isinstance(owners_raw, str):
+        owners_parts = owners_raw.replace(",", "").split("..")
+    else:
+        owners_parts = ["0", "0"]
         
-        owners_raw = spy.get("owners", "0 .. 0")
-        if isinstance(owners_raw, str):
-            owners_parts = owners_raw.replace(",", "").split("..")
-        else:
-            owners_parts = ["0", "0"]
-            
-        min_owners = safe_int(owners_parts[0] if len(owners_parts) > 0 else 0, 0)
-        max_owners = safe_int(owners_parts[1] if len(owners_parts) > 1 else 0, 0)
+    min_owners = safe_int(owners_parts[0] if len(owners_parts) > 0 else 0, 0)
+    max_owners = safe_int(owners_parts[1] if len(owners_parts) > 1 else 0, 0)
 
-        current_price = safe_int(price_overview.get("final"), base_price)
-        discount_pct = safe_int(price_overview.get("discount_percent"), 0)
-        pos_reviews = safe_int(reviews.get("total_positive"), 0)
-        neg_reviews = safe_int(reviews.get("total_negative"), 0)
-        review_desc = safe_str(reviews.get("review_score_desc"))
-        avg_playtime = safe_int(spy.get("average_2weeks"), 0)
-        med_playtime = safe_int(spy.get("median_2weeks"), 0)
-        ccu = safe_int(spy.get("ccu"), 0)
+    current_price = safe_int(price_overview.get("final"), base_price)
+    discount_pct = safe_int(price_overview.get("discount_percent"), 0)
+    pos_reviews = safe_int(reviews.get("total_positive"), 0)
+    neg_reviews = safe_int(reviews.get("total_negative"), 0)
+    review_desc = safe_str(reviews.get("review_score_desc"))
+    avg_playtime = safe_int(spy.get("average_2weeks"), 0)
+    med_playtime = safe_int(spy.get("median_2weeks"), 0)
+    ccu = safe_int(spy.get("ccu"), 0)
 
-        cursor.execute(insert_metrics_sql, (
-            app_id, current_price, discount_pct, live_players,
-            pos_reviews, neg_reviews, review_desc, min_owners,
-            max_owners, avg_playtime, med_playtime, ccu
-        ))
+    cursor.execute(insert_metrics_sql, (
+        app_id, current_price, discount_pct, live_players,
+        pos_reviews, neg_reviews, review_desc, min_owners,
+        max_owners, avg_playtime, med_playtime, ccu
+    ))
 
     cursor.execute("UPDATE games SET metrics_updated_at = NOW() WHERE app_id = %s;", (app_id,))
     conn.commit()
