@@ -1,0 +1,26 @@
+name: Steam Scraper Test
+
+on:
+  workflow_dispatch: # Lets you trigger the script manually with a click
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests psycopg2-binary
+
+      - name: Run Scraper Script
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python scraper.py
