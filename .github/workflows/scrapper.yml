@@ -1,19 +1,18 @@
-name: Steam Analytics Daily Scraper
+name: Steam Analytics Automation
 
 on:
-  workflow_dispatch:
   schedule:
+    # Runs the scraper automatically every night at 00:00 UTC
     - cron: '0 0 * * *'
-
-concurrency:
-  group: steam-scraper-run
-  cancel-in-progress: false # Set to 'true' if you want a new manual click to cancel the old run, or 'false' to let the current one finish first.
+  # Allows manual triggers from the GitHub Actions tab anytime
+  workflow_dispatch:
 
 jobs:
-  run-scraper:
+  run-pipeline:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -23,10 +22,17 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install requests psycopg2-binary
 
-      - name: Run Scraper Script
+      - name: Run Discovery Pass (Weekly Catalog Refresh)
+        env:
+          STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python discovery.py
+
+      - name: Run Metric Enrichment Pass
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          python scraper.py
+          BATCH_SIZE: 3000
+        run: python scraper.py
