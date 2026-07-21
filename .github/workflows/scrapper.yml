@@ -2,8 +2,8 @@ name: Steam Analytics Automation
 
 on:
   schedule:
-    # Runs the scraper automatically every night at 00:00 UTC
-    - cron: '0 0 * * *'
+    # Runs 4 times a day: 00:00, 06:00, 12:00, and 18:00 UTC
+    - cron: '0 0,6,12,18 * * *'
   # Allows manual triggers from the GitHub Actions tab anytime
   workflow_dispatch:
 
@@ -35,4 +35,5 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BATCH_SIZE: 3000
-        run: python scraper.py
+          PYTHONUNBUFFERED: "1"  # Fixes the live logs!
+        run: python -u scraper.py
