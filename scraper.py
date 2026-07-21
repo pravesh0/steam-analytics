@@ -114,7 +114,7 @@ def save_game_metrics(conn, cursor, payload):
     is_free = bool(store.get("is_free", False))
     required_age = safe_int(store.get("required_age"), 0)
     short_desc = safe_str(store.get("short_description"))
-    release_date_str = safe_date(release_data.get("date"))  # Safely checks for 'Coming soon'
+    release_date_str = safe_date(release_data.get("date"))
     base_price = safe_int(price_overview.get("initial"), 0)
     controller_support = safe_str(store.get("controller_support"), "none")
     metacritic_score = safe_int(metacritic.get("score"), 0)
@@ -150,6 +150,59 @@ def save_game_metrics(conn, cursor, payload):
         mac_support, linux_support, app_id
     ))
 
+    # --- POPULATE COMPANIES (Developers & Publishers) ---
+    developers = store.get("developers", [])
+    publishers = store.get("publishers", [])
+    
+    company_roles = []
+    if isinstance(developers, list):
+        for dev in developers:
+            if dev and isinstance(dev, str):
+                company_roles.append((dev.strip(), "developer"))
+    if isinstance(publishers, list):
+        for pub in publishers:
+            if pub and isinstance(pub, str):
+                company_roles.append((pub.strip(), "publisher"))
+
+    cursor.execute("DELETE FROM game_companies WHERE app_id = %s;", (app_id,))
+
+    for comp_name, role in company_roles:
+        cursor.execute("""
+            INSERT INTO companies (name) VALUES (%s)
+            ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+            RETURNING company_id;
+        """, (comp_name,))
+        row = cursor.fetchone()
+        if row:
+            company_id = row[0]
+            cursor.execute("""
+                INSERT INTO game_companies (app_id, company_id, role_type)
+                VALUES (%s, %s, %s)
+                ON CONFLICT DO NOTHING;
+            """, (app_id, company_id, role))
+
+    # --- POPULATE TAGS & GAME_TAGS (From SteamSpy) ---
+    spy_tags = spy.get("tags", {})
+    if isinstance(spy_tags, dict) and spy_tags:
+        cursor.execute("DELETE FROM game_tags WHERE app_id = %s;", (app_id,))
+        for tag_name, votes in spy_tags.items():
+            if not tag_name:
+                continue
+            cursor.execute("""
+                INSERT INTO tags (name) VALUES (%s)
+                ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                RETURNING tag_id;
+            """, (tag_name,))
+            t_row = cursor.fetchone()
+            if t_row:
+                tag_id = t_row[0]
+                safe_votes = safe_int(votes, 0)
+                cursor.execute("""
+                    INSERT INTO game_tags (app_id, tag_id, votes)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT DO NOTHING;
+                """, (app_id, tag_id, safe_votes))
+
     # --- STORAGE STRATEGY ---
     is_coming_soon = release_data.get("coming_soon", False)
     live_players = safe_int(payload["players"], 0)
@@ -158,7 +211,6 @@ def save_game_metrics(conn, cursor, payload):
     is_dead = (not is_coming_soon) and (live_players == 0 and peak_players == 0)
 
     if not is_dead:
-        # NOTICE: DATE_TRUNC('day', NOW()) prevents database bloat by grouping updates by calendar day
         insert_metrics_sql = """
             INSERT INTO weekly_metrics (
                 app_id, recorded_at, current_price, discount_percent, 
