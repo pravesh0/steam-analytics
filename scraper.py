@@ -5,7 +5,7 @@ import psycopg2
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 1500))  # Process 1,500 games per run
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 3000))  # Process 1,500 games per run
 MAX_WORKERS = 5  # Parallel threads for fetching endpoints simultaneously
 
 if not DATABASE_URL:
