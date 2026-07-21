@@ -6,7 +6,7 @@ import psycopg2.extras
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 3000))  # Process 1,500 games per run
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 3000))  # Process batch size per run
 MAX_WORKERS = 5  # Parallel threads for fetching endpoints simultaneously
 
 if not DATABASE_URL:
@@ -50,9 +50,13 @@ def fetch_reviews(app_id):
 
 def fetch_followers(app_id):
     url = f"https://steamcommunity.com/games/{app_id}/memberslistxml/?xml=1"
+    # Disguise the request as a standard Chrome web browser
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     try:
-        res = requests.get(url, timeout=7)
-        if "<groupDetails>" in res.text:
+        res = requests.get(url, headers=headers, timeout=7)
+        if "<memberCount>" in res.text:
             start = res.text.find("<memberCount>") + 13
             end = res.text.find("</memberCount>")
             return int(res.text[start:end])
@@ -85,18 +89,7 @@ def enrich_game(app_id):
             "followers": future_followers.result()
         }
 
-# --- DATABASE QUEUE & SAVER ---
-
-def get_queue_batch(cursor, limit):
-    """Pulls the highest priority games needing enrichment."""
-    query = """
-        SELECT app_id 
-        FROM games 
-        ORDER BY metrics_updated_at ASC NULLS FIRST 
-        LIMIT %s;
-    """
-    cursor.execute(query, (limit,))
-    return [row[0] for rowquery in cursor.fetchall() for row in rowquery] # flattened list
+# --- DATABASE SAVER ---
 
 def save_game_metrics(conn, cursor, payload):
     """Persists metrics and updates the queue timestamp."""
@@ -104,6 +97,9 @@ def save_game_metrics(conn, cursor, payload):
     store = payload["store"]
     spy = payload["spy"]
     reviews = payload["reviews"]
+    
+    # Safely extract release date dictionary
+    release_data = store.get("release_date") or {}
     
     # 1. Update Games Table Metadata
     update_game_sql = """
@@ -125,23 +121,14 @@ def save_game_metrics(conn, cursor, payload):
     """
     
     price_overview = store.get("price_overview", {})
-    release_date_str = store.get("release_date", {}).get("date")
-    
-    # Basic date cleanup
-    release_date = None
-    if release_date_str:
-        try:
-            # Add simple parsing if needed or let PG handle standard string format
-            release_date = release_date_str
-        except Exception:
-            pass
+    release_date_str = release_data.get("date")
 
     cursor.execute(update_game_sql, (
         store.get("type"),
         store.get("is_free", False),
         store.get("required_age", 0),
         store.get("short_description"),
-        release_date,
+        release_date_str,
         price_overview.get("initial", 0),
         store.get("controller_support", "none"),
         store.get("metacritic", {}).get("score", 0),
@@ -152,37 +139,53 @@ def save_game_metrics(conn, cursor, payload):
     ))
 
     # 2. Insert Time-Series Record into weekly_metrics
-    insert_metrics_sql = """
-        INSERT INTO weekly_metrics (
-            app_id, recorded_at, current_price, discount_percent, 
-            concurrent_players, total_positive_reviews, total_negative_reviews, 
-            review_score_desc, steam_followers, estimated_owners_min, 
-            estimated_owners_max, average_playtime_2weeks, median_playtime_2weeks, top_seller_rank
-        ) VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (app_id, recorded_at) DO UPDATE SET current_price = EXCLUDED.current_price;
-    """
+
+    is_coming_soon = release_data.get("coming_soon", False)
     
-    owners_raw = spy.get("owners", "0 .. 0").replace(",", "").split("..")
-    min_owners = int(owners_raw[0].strip()) if len(owners_raw) > 0 and owners_raw[0].strip().isdigit() else 0
-    max_owners = int(owners_raw[1].strip()) if len(owners_raw) > 1 and owners_raw[1].strip().isdigit() else 0
+    live_players = payload["players"] or 0
+    peak_players = spy.get("ccu", 0)
 
-    cursor.execute(insert_metrics_sql, (
-        app_id,
-        price_overview.get("final", 0),
-        price_overview.get("discount_percent", 0),
-        payload["players"],
-        reviews.get("total_positive", 0),
-        reviews.get("total_negative", 0),
-        reviews.get("review_score_desc"),
-        payload["followers"],
-        min_owners,
-        max_owners,
-        spy.get("average_2weeks", 0),
-        spy.get("median_2weeks", 0),
-        spy.get("ccu", 0)
-    ))
+    # The Dynamic Filter
+    if is_coming_soon:
+        # PRE-RELEASE: Judge by pre-launch hype. Save row only if 10+ people are tracking it.
+        has_followers = payload["followers"] and payload["followers"] >= 10
+        is_dead = not has_followers
+    else:
+        # POST-RELEASE: If nobody is playing it right now AND nobody played it yesterday, it's dead today. 
+        is_dead = (live_players == 0 and peak_players == 0)
 
-    # Always mark metrics_updated_at even if it was a non-game or incomplete row
+    if not is_dead:
+        insert_metrics_sql = """
+            INSERT INTO weekly_metrics (
+                app_id, recorded_at, current_price, discount_percent, 
+                concurrent_players, total_positive_reviews, total_negative_reviews, 
+                review_score_desc, steam_followers, estimated_owners_min, 
+                estimated_owners_max, average_playtime_2weeks, median_playtime_2weeks, top_seller_rank
+            ) VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (app_id, recorded_at) DO UPDATE SET current_price = EXCLUDED.current_price;
+        """
+        
+        owners_raw = spy.get("owners", "0 .. 0").replace(",", "").split("..")
+        min_owners = int(owners_raw[0].strip()) if len(owners_raw) > 0 and owners_raw[0].strip().isdigit() else 0
+        max_owners = int(owners_raw[1].strip()) if len(owners_raw) > 1 and owners_raw[1].strip().isdigit() else 0
+
+        cursor.execute(insert_metrics_sql, (
+            app_id,
+            price_overview.get("final", 0),
+            price_overview.get("discount_percent", 0),
+            payload["players"],
+            reviews.get("total_positive", 0),
+            reviews.get("total_negative", 0),
+            reviews.get("review_score_desc"),
+            payload["followers"],
+            min_owners,
+            max_owners,
+            spy.get("average_2weeks", 0),
+            spy.get("median_2weeks", 0),
+            spy.get("ccu", 0)
+        ))
+
+    # Always mark metrics_updated_at so the queue keeps moving
     cursor.execute("UPDATE games SET metrics_updated_at = NOW() WHERE app_id = %s;", (app_id,))
     conn.commit()
 
@@ -219,7 +222,7 @@ def run_enrichment_pipeline():
         elapsed = time.time() - start_time
         print(f"[{idx}/{len(app_ids)}] App ID {app_id} -> {status} ({elapsed:.2f}s)")
         
-        # 1-second pause between games to keep Steam happy
+        # 2.5-second pause between games to keep Steam happy
         time.sleep(2.5)
 
     cursor.close()
