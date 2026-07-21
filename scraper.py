@@ -6,7 +6,7 @@ import psycopg2.extras
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 3000))
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 5000))
 MAX_WORKERS = 5
 
 if not DATABASE_URL:
@@ -188,7 +188,7 @@ def run_enrichment_pipeline():
         elapsed = time.time() - start_time
         print(f"[{idx}/{len(app_ids)}] App ID {app_id} -> {status} ({elapsed:.2f}s)")
         
-        time.sleep(2.5)
+        time.sleep(1.2)
 
     cursor.close()
     conn.close()

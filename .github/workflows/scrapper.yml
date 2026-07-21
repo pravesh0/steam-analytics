@@ -2,8 +2,8 @@ name: Steam Analytics Automation
 
 on:
   schedule:
-    # Runs 4 times a day: 00:00, 06:00, 12:00, and 18:00 UTC
-    - cron: '0 0,6,12,18 * * *'
+    # Runs every 4 hours: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 jobs:
@@ -33,6 +33,6 @@ jobs:
       - name: Run Metric Enrichment Pass
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          BATCH_SIZE: 3000
+          BATCH_SIZE: 4000
           PYTHONUNBUFFERED: "1"  
         run: python -u scraper.py

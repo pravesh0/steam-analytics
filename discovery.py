@@ -43,7 +43,7 @@ def fetch_all_steam_apps():
             last_appid = data.get("last_appid", apps[-1]["appid"])
             
             print(f"[SUCCESS] Fetched page. Total apps found so far: {len(apps_discovered)}")
-            time.sleep(1) # Small 1-second safety pause between pages
+            time.sleep(1.5) # Small 1-second safety pause between pages
             
         except Exception as e:
             print(f"[ERROR] Failed to fetch app list at last_appid {last_appid}: {e}")
