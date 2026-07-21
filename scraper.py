@@ -290,7 +290,6 @@ def run_scraper():
         print("Failed to retrieve master list. Exiting.")
         return
 
-    # Keep it at 100 for this test run
     target_apps = random.sample(all_app_ids, 100) if len(all_app_ids) > 100 else all_app_ids
     print(f"Randomly selected {len(target_apps)} games to process.")
 
