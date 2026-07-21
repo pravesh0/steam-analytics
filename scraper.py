@@ -18,15 +18,17 @@ def get_db_connection():
         return None
 
 def fetch_master_app_list():
-    """Harvests thousands of active app IDs using paginated SteamSpy and store categories with verbose logging."""
+    """Harvests a rotating, dynamic pool of app IDs using randomized SteamSpy pagination and store categories."""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     app_ids = set()
 
-    # 1. Harvest from SteamSpy paginated endpoint (10 pages = ~10,000 real game IDs)
-    print("[INFO] Harvesting app IDs from SteamSpy pages...")
-    for page in range(10):
+    # 1. Randomly pick 5 different pages out of the 15 available SteamSpy pages on every run
+    selected_pages = random.sample(range(15), 5)
+    print(f"[INFO] Randomly selected SteamSpy pages to harvest today: {selected_pages}")
+    
+    for page in selected_pages:
         url = f"https://steamspy.com/api.php?request=all&p={page}"
         try:
             response = requests.get(url, headers=headers, timeout=10)
@@ -36,16 +38,13 @@ def fetch_master_app_list():
                     for appid in data.keys():
                         app_ids.add(int(appid))
                     print(f"   [SUCCESS] SteamSpy page {page} loaded ({len(data)} games)")
-                else:
-                    print(f"   [INFO] SteamSpy page {page} returned empty or finished.")
-                    break
             else:
                 print(f"   [WARNING] SteamSpy page {page} status code: {response.status_code}")
         except Exception as e:
             print(f"   [ERROR] Exception on SteamSpy page {page}: {e}")
         time.sleep(0.5)
 
-    # 2. Harvest from Steam Store Categories
+    # 2. Harvest fresh active items from Steam Store Categories
     store_url = "https://store.steampowered.com/api/featuredcategories/"
     try:
         print("[INFO] Fetching app IDs from Steam Store featured categories...")
@@ -61,8 +60,6 @@ def fetch_master_app_list():
                         app_ids.add(int(appid))
                         cat_count += 1
             print(f"   [SUCCESS] Added {cat_count} IDs from store categories.")
-        else:
-            print(f"   [WARNING] Store Categories API status: {response.status_code}")
     except Exception as e:
         print(f"   [ERROR] Store Categories exception: {e}")
 
@@ -75,7 +72,7 @@ def fetch_master_app_list():
     for aid in fallback_ids:
         app_ids.add(aid)
 
-    print(f"[INFO] Total unique app ID pool size: {len(app_ids)}")
+    print(f"[INFO] Today's total unique app ID pool size: {len(app_ids)}")
     return list(app_ids)
 
 def fetch_top_sellers():
@@ -343,7 +340,6 @@ def run_scraper():
         conn.close()
         return
 
-    # Set target batch size to 2000 (or whatever pool size is available)
     batch_size = min(2000, len(all_app_ids))
     target_apps = random.sample(all_app_ids, batch_size)
     print(f"[INFO] Randomly selected {len(target_apps)} games to process in this run.")
