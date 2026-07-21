@@ -1,9 +1,13 @@
 name: Steam Analytics Daily Scraper
 
 on:
-  workflow_dispatch: # Allows manual triggering anytime
+  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *' # Runs automatically every day at 00:00 UTC
+    - cron: '0 0 * * *'
+
+concurrency:
+  group: steam-scraper-run
+  cancel-in-progress: false # Set to 'true' if you want a new manual click to cancel the old run, or 'false' to let the current one finish first.
 
 jobs:
   run-scraper:
