@@ -37,17 +37,8 @@ def safe_str(val, default=None):
     return str(val)
 
 def safe_date(val):
-    """Sanitizes Steam release dates, rejecting non-date phrases like 'Coming soon'."""
-    val_str = safe_str(val)
-    if not val_str:
-        return None
-    
-    # Catch text phrases that break PostgreSQL DATE parsing
-    invalid_phrases = ["coming soon", "tba", "soon", "tbd", "to be announced"]
-    if any(phrase in val_str.lower() for phrase in invalid_phrases):
-        return None
-        
-    return val_str
+    """Safely captures Steam release dates as raw text strings."""
+    return safe_str(val)
 
 # --- INDIVIDUAL API FETCHERS ---
 
