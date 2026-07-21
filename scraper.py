@@ -6,12 +6,35 @@ import psycopg2.extras
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 5000))
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 4000))
 MAX_WORKERS = 5
 
 if not DATABASE_URL:
     print("Error: Missing DATABASE_URL environment variable.")
     exit(1)
+
+# --- SAFETY HELPER FUNCTIONS ---
+
+def safe_int(val, default=0):
+    """Safely converts messy API values (strings, empty strings, None) into clean integers."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return int(val)
+    if isinstance(val, str):
+        val = val.strip()
+        if val.isdigit() or (val.startswith('-') and val[1:].isdigit()):
+            return int(val)
+    return default
+
+def safe_str(val, default=None):
+    """Safely sanitizes text fields, turning empty strings or blanks into None."""
+    if val is None:
+        return default
+    if isinstance(val, str):
+        val = val.strip()
+        return val if val else default
+    return str(val)
 
 # --- INDIVIDUAL API FETCHERS ---
 
@@ -79,7 +102,27 @@ def save_game_metrics(conn, cursor, payload):
     reviews = payload["reviews"]
     
     release_data = store.get("release_date") or {}
+    price_overview = store.get("price_overview", {})
+    metacritic = store.get("metacritic", {})
+    platforms = store.get("platforms", {})
     
+    # --- BULLETPROOF FIELD SANITIZATION ---
+    game_type = safe_str(store.get("type"), "game")
+    is_free = bool(store.get("is_free", False))
+    required_age = safe_int(store.get("required_age"), 0)
+    short_desc = safe_str(store.get("short_description"))
+    release_date_str = safe_str(release_data.get("date"))
+    base_price = safe_int(price_overview.get("initial"), 0)
+    controller_support = safe_str(store.get("controller_support"), "none")
+    metacritic_score = safe_int(metacritic.get("score"), 0)
+    
+    languages = store.get("supported_languages")
+    languages_json = psycopg2.extras.Json(languages) if languages else None
+    
+    mac_support = bool(platforms.get("mac", False))
+    linux_support = bool(platforms.get("linux", False))
+    # -------------------------------------
+
     update_game_sql = """
         UPDATE games SET
             type = %s,
@@ -97,31 +140,18 @@ def save_game_metrics(conn, cursor, payload):
             metrics_updated_at = NOW()
         WHERE app_id = %s;
     """
-    
-    price_overview = store.get("price_overview", {})
-    release_date_str = release_data.get("date")
 
     cursor.execute(update_game_sql, (
-        store.get("type"),
-        store.get("is_free", False),
-        store.get("required_age", 0),
-        store.get("short_description"),
-        release_date_str,
-        price_overview.get("initial", 0),
-        store.get("controller_support", "none"),
-        store.get("metacritic", {}).get("score", 0),
-        psycopg2.extras.Json(store.get("supported_languages")),
-        store.get("platforms", {}).get("mac", False),
-        store.get("platforms", {}).get("linux", False),
-        app_id
+        game_type, is_free, required_age, short_desc, release_date_str,
+        base_price, controller_support, metacritic_score, languages_json,
+        mac_support, linux_support, app_id
     ))
 
     # --- STORAGE STRATEGY ---
     is_coming_soon = release_data.get("coming_soon", False)
-    live_players = payload["players"] or 0
-    peak_players = spy.get("ccu", 0)
+    live_players = safe_int(payload["players"], 0)
+    peak_players = safe_int(spy.get("ccu"), 0)
 
-    # Keep ALL unreleased games (priority) + live games. Skip dead released games.
     is_dead = (not is_coming_soon) and (live_players == 0 and peak_players == 0)
 
     if not is_dead:
@@ -135,23 +165,28 @@ def save_game_metrics(conn, cursor, payload):
             ON CONFLICT (app_id, recorded_at) DO UPDATE SET current_price = EXCLUDED.current_price;
         """
         
-        owners_raw = spy.get("owners", "0 .. 0").replace(",", "").split("..")
-        min_owners = int(owners_raw[0].strip()) if len(owners_raw) > 0 and owners_raw[0].strip().isdigit() else 0
-        max_owners = int(owners_raw[1].strip()) if len(owners_raw) > 1 and owners_raw[1].strip().isdigit() else 0
+        owners_raw = spy.get("owners", "0 .. 0")
+        if isinstance(owners_raw, str):
+            owners_parts = owners_raw.replace(",", "").split("..")
+        else:
+            owners_parts = ["0", "0"]
+            
+        min_owners = safe_int(owners_parts[0] if len(owners_parts) > 0 else 0, 0)
+        max_owners = safe_int(owners_parts[1] if len(owners_parts) > 1 else 0, 0)
+
+        current_price = safe_int(price_overview.get("final"), base_price)
+        discount_pct = safe_int(price_overview.get("discount_percent"), 0)
+        pos_reviews = safe_int(reviews.get("total_positive"), 0)
+        neg_reviews = safe_int(reviews.get("total_negative"), 0)
+        review_desc = safe_str(reviews.get("review_score_desc"))
+        avg_playtime = safe_int(spy.get("average_2weeks"), 0)
+        med_playtime = safe_int(spy.get("median_2weeks"), 0)
+        ccu = safe_int(spy.get("ccu"), 0)
 
         cursor.execute(insert_metrics_sql, (
-            app_id,
-            price_overview.get("final", 0),
-            price_overview.get("discount_percent", 0),
-            payload["players"],
-            reviews.get("total_positive", 0),
-            reviews.get("total_negative", 0),
-            reviews.get("review_score_desc"),
-            min_owners,
-            max_owners,
-            spy.get("average_2weeks", 0),
-            spy.get("median_2weeks", 0),
-            spy.get("ccu", 0)
+            app_id, current_price, discount_pct, live_players,
+            pos_reviews, neg_reviews, review_desc, min_owners,
+            max_owners, avg_playtime, med_playtime, ccu
         ))
 
     cursor.execute("UPDATE games SET metrics_updated_at = NOW() WHERE app_id = %s;", (app_id,))
