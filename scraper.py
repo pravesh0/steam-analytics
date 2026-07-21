@@ -7,20 +7,22 @@ import random
 import os
 from datetime import datetime, timezone
 
-
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def fetch_master_app_list():
-    """Fetches the official master list of every App ID on Steam."""
+    """Fetches the official master list of every App ID on Steam with browser headers."""
     url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     try:
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, headers=headers, timeout=15)
+        print(f"Master List Status Code: {response.status_code}")
         if response.status_code == 200:
             apps = response.json().get("applist", {}).get("apps", [])
-            # Extract just the IDs into a massive list
             return [app["appid"] for app in apps]
     except Exception as e:
         print(f"Master List API Error: {e}")
@@ -29,14 +31,18 @@ def fetch_master_app_list():
 def fetch_top_sellers():
     url = "https://store.steampowered.com/api/featuredcategories/"
     ranks = {}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
+            data = response.json()
             top_sellers = data.get("top_sellers", {}).get("items", [])
             for index, item in enumerate(top_sellers):
                 ranks[item.get("id")] = index + 1
     except Exception as e:
-        pass
+        print(f"Top Sellers API Error: {e}")
     return ranks
 
 def fetch_steam_store_data(app_id):
@@ -267,16 +273,15 @@ def run_scraper():
         print("Failed to retrieve master list. Exiting.")
         return
 
-    # Select a random batch of 100 games to scrape
+    # Keep it at 100 for this test run
     target_apps = random.sample(all_app_ids, 100) if len(all_app_ids) > 100 else all_app_ids
     print(f"Randomly selected {len(target_apps)} games to process.")
 
     for idx, app_id in enumerate(target_apps, 1):
-        print(f"[{idx}/50] Fetching Data for App ID: {app_id}...")
+        print(f"[{idx}/100] Fetching Data for App ID: {app_id}...")
         
         store_data = fetch_steam_store_data(app_id)
         
-        # If it's a valid game/dlc, process the rest
         if store_data:
             player_count = fetch_steam_players(app_id)
             spy_data = fetch_steamspy_data(app_id)
@@ -297,7 +302,6 @@ def run_scraper():
         else:
             print("   -> Skipped (No store data or invalid ID)")
 
-        # IMPORTANT: Increased to 3 seconds to dodge Steam's 420 Error!
         time.sleep(3)
 
     cursor.close()
