@@ -18,41 +18,64 @@ def get_db_connection():
         return None
 
 def fetch_master_app_list():
-    """Fetches active app IDs from Steam's featured categories endpoint with verbose logging."""
-    url = "https://store.steampowered.com/api/featuredcategories/"
+    """Harvests thousands of active app IDs using paginated SteamSpy and store categories with verbose logging."""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     app_ids = set()
+
+    # 1. Harvest from SteamSpy paginated endpoint (10 pages = ~10,000 real game IDs)
+    print("[INFO] Harvesting app IDs from SteamSpy pages...")
+    for page in range(10):
+        url = f"https://steamspy.com/api.php?request=all&p={page}"
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict) and len(data) > 0:
+                    for appid in data.keys():
+                        app_ids.add(int(appid))
+                    print(f"   [SUCCESS] SteamSpy page {page} loaded ({len(data)} games)")
+                else:
+                    print(f"   [INFO] SteamSpy page {page} returned empty or finished.")
+                    break
+            else:
+                print(f"   [WARNING] SteamSpy page {page} status code: {response.status_code}")
+        except Exception as e:
+            print(f"   [ERROR] Exception on SteamSpy page {page}: {e}")
+        time.sleep(0.5)
+
+    # 2. Harvest from Steam Store Categories
+    store_url = "https://store.steampowered.com/api/featuredcategories/"
     try:
         print("[INFO] Fetching app IDs from Steam Store featured categories...")
-        response = requests.get(url, headers=headers, timeout=15)
-        print(f"[INFO] Store Categories API Status Code: {response.status_code}")
-        
+        response = requests.get(store_url, headers=headers, timeout=15)
         if response.status_code == 200:
             data = response.json()
+            cat_count = 0
             for category_key in ["top_sellers", "new_releases", "specials", "coming_soon"]:
                 items = data.get(category_key, {}).get("items", [])
                 for item in items:
                     appid = item.get("id")
                     if appid:
                         app_ids.add(int(appid))
-            print(f"[SUCCESS] Retrieved {len(app_ids)} unique active app IDs from store categories.")
+                        cat_count += 1
+            print(f"   [SUCCESS] Added {cat_count} IDs from store categories.")
         else:
-            print(f"[WARNING] Store Categories API returned unexpected status: {response.status_code}")
+            print(f"   [WARNING] Store Categories API status: {response.status_code}")
     except Exception as e:
-        print(f"[ERROR] Exception occurred while fetching store categories: {e}")
+        print(f"   [ERROR] Store Categories exception: {e}")
 
-    # Fallback popular app IDs to guarantee data availability
+    # 3. Core fallback app IDs
     fallback_ids = [
         730, 570, 271590, 1091500, 1172470, 230410, 440, 304930, 1086940, 524220,
         359550, 252490, 292030, 2195250, 1245620, 1938090, 1623730, 108710, 8930,
         236390, 221100, 218620, 550, 400, 620, 205790, 242760, 261550, 346110
     ]
-    print(f"[INFO] Adding {len(fallback_ids)} core fallback app IDs to the pool.")
     for aid in fallback_ids:
         app_ids.add(aid)
 
+    print(f"[INFO] Total unique app ID pool size: {len(app_ids)}")
     return list(app_ids)
 
 def fetch_top_sellers():
@@ -83,11 +106,11 @@ def fetch_steam_store_data(app_id):
                 if app_dict.get("success"):
                     return app_dict.get("data")
                 else:
-                    print(f"   [API SKIP] App ID {app_id}: Store returned success=False (might be banned/removed).")
+                    print(f"   [API SKIP] App ID {app_id}: Store returned success=False.")
             else:
-                print(f"   [API SKIP] App ID {app_id}: Invalid JSON structure returned.")
+                print(f"   [API SKIP] App ID {app_id}: Invalid JSON structure.")
         else:
-            print(f"   [API WARN] App ID {app_id}: Store API status code {response.status_code}")
+            print(f"   [API WARN] App ID {app_id}: Store API status {response.status_code}")
     except Exception as e:
         print(f"   [API ERROR] App ID {app_id} Store API Exception: {e}")
     return {}
@@ -197,15 +220,11 @@ def upsert_game_metadata(cursor, app_id, store_data):
             linux_support = EXCLUDED.linux_support,
             updated_at = NOW();
     """
-    try:
-        cursor.execute(sql, (
-            app_id, title, game_type, is_free, required_age, short_desc, 
-            release_date_obj, base_price, controller_support, metacritic_score, 
-            supported_languages, mac_support, linux_support
-        ))
-    except Exception as e:
-        print(f"   [DB ERROR] Failed to upsert metadata for App ID {app_id}: {e}")
-        raise
+    cursor.execute(sql, (
+        app_id, title, game_type, is_free, required_age, short_desc, 
+        release_date_obj, base_price, controller_support, metacritic_score, 
+        supported_languages, mac_support, linux_support
+    ))
 
 def upsert_companies(cursor, app_id, store_data):
     developers = store_data.get("developers", [])
@@ -228,7 +247,7 @@ def upsert_companies(cursor, app_id, store_data):
                 ON CONFLICT (app_id, company_id, role_type) DO NOTHING;
             """, (app_id, company_id, role))
         except Exception as e:
-            print(f"   [DB ERROR] Failed to link company '{name}' ({role}) for App ID {app_id}: {e}")
+            print(f"   [DB ERROR] Failed to link company '{name}': {e}")
 
     for dev in developers:
         link_company(dev, "developer")
@@ -255,7 +274,7 @@ def upsert_tags(cursor, app_id, spy_data):
                 ON CONFLICT (app_id, tag_id) DO UPDATE SET votes = EXCLUDED.votes;
             """, (app_id, tag_id, votes))
         except Exception as e:
-            print(f"   [DB ERROR] Failed to upsert tag '{tag_name}' for App ID {app_id}: {e}")
+            print(f"   [DB ERROR] Failed to upsert tag '{tag_name}': {e}")
 
 def insert_weekly_metric(cursor, app_id, store_data, player_count, spy_data, review_data, followers, top_seller_rank):
     recorded_at = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -298,21 +317,16 @@ def insert_weekly_metric(cursor, app_id, store_data, player_count, spy_data, rev
             median_playtime_2weeks = EXCLUDED.median_playtime_2weeks,
             top_seller_rank = EXCLUDED.top_seller_rank;
     """
-    try:
-        cursor.execute(sql, (
-            app_id, recorded_at, current_price, discount_percent, player_count,
-            positive_reviews, negative_reviews, review_score_desc, followers, 
-            min_owners, max_owners, avg_playtime, med_playtime, top_seller_rank
-        ))
-    except Exception as e:
-        print(f"   [DB ERROR] Failed to insert weekly metrics for App ID {app_id}: {e}")
-        raise
+    cursor.execute(sql, (
+        app_id, recorded_at, current_price, discount_percent, player_count,
+        positive_reviews, negative_reviews, review_score_desc, followers, 
+        min_owners, max_owners, avg_playtime, med_playtime, top_seller_rank
+    ))
 
 def run_scraper():
     print("[INFO] Starting Steam Scraper batch run...")
     conn = get_db_connection()
     if not conn:
-        print("[CRITICAL] Exiting script due to database connection failure.")
         return
 
     cursor = conn.cursor()
@@ -320,16 +334,18 @@ def run_scraper():
     print("[INFO] Fetching Global Top Sellers Chart...")
     global_top_sellers = fetch_top_sellers()
 
-    print("[INFO] Fetching Master App List from Store Categories...")
+    print("[INFO] Harvesting Master App List...")
     all_app_ids = fetch_master_app_list()
     
     if not all_app_ids:
-        print("[CRITICAL] Failed to retrieve any app IDs. Exiting.")
+        print("[CRITICAL] Failed to retrieve app IDs. Exiting.")
         cursor.close()
         conn.close()
         return
 
-    target_apps = random.sample(all_app_ids, min(100, len(all_app_ids)))
+    # Set target batch size to 2000 (or whatever pool size is available)
+    batch_size = min(2000, len(all_app_ids))
+    target_apps = random.sample(all_app_ids, batch_size)
     print(f"[INFO] Randomly selected {len(target_apps)} games to process in this run.")
 
     success_count = 0
@@ -337,7 +353,6 @@ def run_scraper():
 
     for idx, app_id in enumerate(target_apps, 1):
         print(f"\n[{idx}/{len(target_apps)}] Processing App ID: {app_id}...")
-        
         store_data = fetch_steam_store_data(app_id)
         
         if store_data:
@@ -362,7 +377,7 @@ def run_scraper():
             except Exception as db_err:
                 conn.rollback()
                 fail_count += 1
-                print(f"   -> [DB TRANSACTION FAILED] Rolled back transaction for App ID {app_id}: {db_err}")
+                print(f"   -> [DB ERROR] Rolled back transaction for App ID {app_id}: {db_err}")
         else:
             fail_count += 1
             print(f"   -> [SKIPPED] No valid store data found for App ID {app_id}")
