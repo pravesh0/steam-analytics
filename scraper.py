@@ -16,7 +16,7 @@ if not DATABASE_URL:
 # --- SAFETY HELPER FUNCTIONS ---
 
 def safe_int(val, default=0):
-    """Safely converts messy API values (strings, empty strings, None) into clean integers."""
+    """Safely converts messy API values into clean integers."""
     if val is None:
         return default
     if isinstance(val, (int, float)):
@@ -35,6 +35,19 @@ def safe_str(val, default=None):
         val = val.strip()
         return val if val else default
     return str(val)
+
+def safe_date(val):
+    """Sanitizes Steam release dates, rejecting non-date phrases like 'Coming soon'."""
+    val_str = safe_str(val)
+    if not val_str:
+        return None
+    
+    # Catch text phrases that break PostgreSQL DATE parsing
+    invalid_phrases = ["coming soon", "tba", "soon", "tbd", "to be announced"]
+    if any(phrase in val_str.lower() for phrase in invalid_phrases):
+        return None
+        
+    return val_str
 
 # --- INDIVIDUAL API FETCHERS ---
 
@@ -74,7 +87,6 @@ def fetch_reviews(app_id):
 # --- PARALLEL WORKER ---
 
 def enrich_game(app_id):
-    """Fires all 4 valid API calls in parallel for a single game."""
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_store = executor.submit(fetch_store_data, app_id)
         future_players = executor.submit(fetch_player_count, app_id)
@@ -111,7 +123,7 @@ def save_game_metrics(conn, cursor, payload):
     is_free = bool(store.get("is_free", False))
     required_age = safe_int(store.get("required_age"), 0)
     short_desc = safe_str(store.get("short_description"))
-    release_date_str = safe_str(release_data.get("date"))
+    release_date_str = safe_date(release_data.get("date"))  # Safely checks for 'Coming soon'
     base_price = safe_int(price_overview.get("initial"), 0)
     controller_support = safe_str(store.get("controller_support"), "none")
     metacritic_score = safe_int(metacritic.get("score"), 0)
@@ -155,14 +167,26 @@ def save_game_metrics(conn, cursor, payload):
     is_dead = (not is_coming_soon) and (live_players == 0 and peak_players == 0)
 
     if not is_dead:
+        # NOTICE: DATE_TRUNC('day', NOW()) prevents database bloat by grouping updates by calendar day
         insert_metrics_sql = """
             INSERT INTO weekly_metrics (
                 app_id, recorded_at, current_price, discount_percent, 
                 concurrent_players, total_positive_reviews, total_negative_reviews, 
                 review_score_desc, steam_followers, estimated_owners_min, 
                 estimated_owners_max, average_playtime_2weeks, median_playtime_2weeks, top_seller_rank
-            ) VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
-            ON CONFLICT (app_id, recorded_at) DO UPDATE SET current_price = EXCLUDED.current_price;
+            ) VALUES (%s, DATE_TRUNC('day', NOW()), %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
+            ON CONFLICT (app_id, recorded_at) DO UPDATE SET 
+                current_price = EXCLUDED.current_price,
+                discount_percent = EXCLUDED.discount_percent,
+                concurrent_players = EXCLUDED.concurrent_players,
+                total_positive_reviews = EXCLUDED.total_positive_reviews,
+                total_negative_reviews = EXCLUDED.total_negative_reviews,
+                review_score_desc = EXCLUDED.review_score_desc,
+                estimated_owners_min = EXCLUDED.estimated_owners_min,
+                estimated_owners_max = EXCLUDED.estimated_owners_max,
+                average_playtime_2weeks = EXCLUDED.average_playtime_2weeks,
+                median_playtime_2weeks = EXCLUDED.median_playtime_2weeks,
+                top_seller_rank = EXCLUDED.top_seller_rank;
         """
         
         owners_raw = spy.get("owners", "0 .. 0")
