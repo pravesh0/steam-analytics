@@ -13,19 +13,36 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def fetch_master_app_list():
-    """Fetches the official master list of every App ID on Steam with browser headers."""
-    url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+    """Fetches the master list of app IDs using SteamSpy, which allows cloud/datacenter IPs."""
+    url = "https://steamspy.com/api.php?request=all"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        print(f"Master List Status Code: {response.status_code}")
+        print("Fetching app list from SteamSpy...")
+        response = requests.get(url, headers=headers, timeout=30)
+        print(f"SteamSpy App List Status Code: {response.status_code}")
+        if response.status_code == 200:
+            data = response.json()
+            app_ids = [int(appid) for appid in data.keys()]
+            if app_ids:
+                print(f"Successfully retrieved {len(app_ids)} apps from SteamSpy.")
+                return app_ids
+    except Exception as e:
+        print(f"SteamSpy App List Error: {e}")
+
+    # Fallback to Valve's official API just in case
+    valve_url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+    try:
+        print("Falling back to Valve's official App List API...")
+        response = requests.get(valve_url, headers=headers, timeout=30)
+        print(f"Valve API Status Code: {response.status_code}")
         if response.status_code == 200:
             apps = response.json().get("applist", {}).get("apps", [])
             return [app["appid"] for app in apps]
     except Exception as e:
-        print(f"Master List API Error: {e}")
+        print(f"Valve API Error: {e}")
+
     return []
 
 def fetch_top_sellers():
