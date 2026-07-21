@@ -6,8 +6,8 @@ import psycopg2.extras
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 3000))  # Process batch size per run
-MAX_WORKERS = 5  # Parallel threads for fetching endpoints simultaneously
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 3000))
+MAX_WORKERS = 5
 
 if not DATABASE_URL:
     print("Error: Missing DATABASE_URL environment variable.")
@@ -48,35 +48,17 @@ def fetch_reviews(app_id):
     except Exception:
         return None
 
-def fetch_followers(app_id):
-    url = f"https://steamcommunity.com/games/{app_id}/memberslistxml/?xml=1"
-    # Disguise the request as a standard Chrome web browser
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    try:
-        res = requests.get(url, headers=headers, timeout=7)
-        if "<memberCount>" in res.text:
-            start = res.text.find("<memberCount>") + 13
-            end = res.text.find("</memberCount>")
-            return int(res.text[start:end])
-    except Exception:
-        pass
-    return None
-
 # --- PARALLEL WORKER ---
 
 def enrich_game(app_id):
-    """Fires all 5 API calls in parallel for a single game."""
+    """Fires all 4 valid API calls in parallel for a single game."""
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_store = executor.submit(fetch_store_data, app_id)
         future_players = executor.submit(fetch_player_count, app_id)
         future_spy = executor.submit(fetch_steamspy_data, app_id)
         future_reviews = executor.submit(fetch_reviews, app_id)
-        future_followers = executor.submit(fetch_followers, app_id)
 
         store_data = future_store.result()
-        # If store data fails or app isn't a game, skip heavy metric writing
         if not store_data:
             return None
 
@@ -85,23 +67,19 @@ def enrich_game(app_id):
             "store": store_data,
             "players": future_players.result(),
             "spy": future_spy.result() or {},
-            "reviews": future_reviews.result() or {},
-            "followers": future_followers.result()
+            "reviews": future_reviews.result() or {}
         }
 
 # --- DATABASE SAVER ---
 
 def save_game_metrics(conn, cursor, payload):
-    """Persists metrics and updates the queue timestamp."""
     app_id = payload["app_id"]
     store = payload["store"]
     spy = payload["spy"]
     reviews = payload["reviews"]
     
-    # Safely extract release date dictionary
     release_data = store.get("release_date") or {}
     
-    # 1. Update Games Table Metadata
     update_game_sql = """
         UPDATE games SET
             type = %s,
@@ -138,21 +116,13 @@ def save_game_metrics(conn, cursor, payload):
         app_id
     ))
 
-    # 2. Insert Time-Series Record into weekly_metrics
-
+    # --- STORAGE STRATEGY ---
     is_coming_soon = release_data.get("coming_soon", False)
-    
     live_players = payload["players"] or 0
     peak_players = spy.get("ccu", 0)
 
-    # The Dynamic Filter
-    if is_coming_soon:
-        # PRE-RELEASE: Judge by pre-launch hype. Save row only if 10+ people are tracking it.
-        has_followers = payload["followers"] and payload["followers"] >= 10
-        is_dead = not has_followers
-    else:
-        # POST-RELEASE: If nobody is playing it right now AND nobody played it yesterday, it's dead today. 
-        is_dead = (live_players == 0 and peak_players == 0)
+    # Keep ALL unreleased games (priority) + live games. Skip dead released games.
+    is_dead = (not is_coming_soon) and (live_players == 0 and peak_players == 0)
 
     if not is_dead:
         insert_metrics_sql = """
@@ -161,7 +131,7 @@ def save_game_metrics(conn, cursor, payload):
                 concurrent_players, total_positive_reviews, total_negative_reviews, 
                 review_score_desc, steam_followers, estimated_owners_min, 
                 estimated_owners_max, average_playtime_2weeks, median_playtime_2weeks, top_seller_rank
-            ) VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
             ON CONFLICT (app_id, recorded_at) DO UPDATE SET current_price = EXCLUDED.current_price;
         """
         
@@ -177,7 +147,6 @@ def save_game_metrics(conn, cursor, payload):
             reviews.get("total_positive", 0),
             reviews.get("total_negative", 0),
             reviews.get("review_score_desc"),
-            payload["followers"],
             min_owners,
             max_owners,
             spy.get("average_2weeks", 0),
@@ -185,7 +154,6 @@ def save_game_metrics(conn, cursor, payload):
             spy.get("ccu", 0)
         ))
 
-    # Always mark metrics_updated_at so the queue keeps moving
     cursor.execute("UPDATE games SET metrics_updated_at = NOW() WHERE app_id = %s;", (app_id,))
     conn.commit()
 
@@ -197,7 +165,6 @@ def run_enrichment_pipeline():
 
     print(f"[INFO] Fetching batch of {BATCH_SIZE} un-enriched games from database queue...")
     
-    # Pull targets from queue
     cursor.execute("SELECT app_id FROM games ORDER BY metrics_updated_at ASC NULLS FIRST LIMIT %s;", (BATCH_SIZE,))
     app_ids = [row[0] for row in cursor.fetchall()]
 
@@ -214,7 +181,6 @@ def run_enrichment_pipeline():
             successful_count += 1
             status = "ENRICHED"
         else:
-            # If invalid/delisted, mark timestamp so queue moves forward
             cursor.execute("UPDATE games SET metrics_updated_at = NOW() WHERE app_id = %s;", (app_id,))
             conn.commit()
             status = "SKIPPED/NO_DATA"
@@ -222,7 +188,6 @@ def run_enrichment_pipeline():
         elapsed = time.time() - start_time
         print(f"[{idx}/{len(app_ids)}] App ID {app_id} -> {status} ({elapsed:.2f}s)")
         
-        # 2.5-second pause between games to keep Steam happy
         time.sleep(2.5)
 
     cursor.close()
