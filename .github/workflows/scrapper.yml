@@ -37,6 +37,6 @@ jobs:
       - name: Run Metric Enrichment Pass
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          BATCH_SIZE: 4000
+          BATCH_SIZE: 10000
           PYTHONUNBUFFERED: "1"  
         run: python -u scraper.py
