@@ -28,7 +28,7 @@ def fetch_all_steam_apps():
         )
         
         try:
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=30)
             response.raise_for_status()
             data = response.json().get("response", {})
             
